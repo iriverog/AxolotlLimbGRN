@@ -1,0 +1,242 @@
+---
+title: "Broad cell type identification"
+author: "Inés Rivero-García"
+date: "1/18/2024"
+output: 
+  html_document:
+      theme: cerulean
+      toc: true
+      toc_float: true
+      number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/NetVolumes/LAB_MT/RESULTADOS/Ines/Axolotl_Limb_Regeneration/")
+
+library(Seurat)
+library(dplyr)
+library(harmony)
+library(celldex)
+library(SingleR)
+library(ggplot2)
+library(gridExtra)
+```
+
+
+```{r load_data, echo=FALSE}
+integrated.all <- readRDS("Raw.data/BL.CSD_merged_renormalized_8000HVGs_harmony.twoBatches.rds")
+gene.translator <- read.csv("Raw.data/AnnotationFile_AmexG_v6_chr_unscaffolded_CherryGFP_v1.2_clean.tsv",
+                            header = TRUE, sep = "\t")
+
+```
+
+
+```{r clustering, echo=FALSE}
+# Repeating Tobi's workflow
+DefaultAssay(integrated.all) <- "RNA"
+integrated.all <- NormalizeData(integrated.all) %>% 
+                    FindVariableFeatures() %>% 
+                    ScaleData() %>% 
+                    RunPCA(verbose = FALSE, npcs = 100)
+integrated.all <- RunHarmony(integrated.all, group.by = "dataset", dims.use = 1:100)
+integrated.all <- RunUMAP(integrated.all, reduction = "harmony", dims = 1:100)
+integrated.all <- FindNeighbors(integrated.all, reduction = "harmony", dims = 1:100) %>% 
+                    FindClusters(resolution = c(0.1, 0.25, 0.5, 1))
+Idents(integrated.all) <- "RNA_snn_res.0.1"
+DimPlot(integrated.all, reduction = "umap")
+Idents(integrated.all) <- "RNA_snn_res.0.25"
+DimPlot(integrated.all, reduction = "umap")
+Idents(integrated.all) <- "RNA_snn_res.0.5"
+DimPlot(integrated.all, reduction = "umap")
+Idents(integrated.all) <- "RNA_snn_res.1"
+DimPlot(integrated.all, reduction = "umap")
+Idents(integrated.all) <- "celltype"
+DimPlot(integrated.all, reduction = "umap")
+```
+
+
+```{r find_markers, echo=FALSE}
+Idents(integrated.all) <- "RNA_snn_res.0.25"
+markerGenes <- FindAllMarkers(integrated.all, logfc.threshold = 0.5, test.use = "wilcox", only.pos = TRUE)
+markerGenes.significant <- markerGenes %>% filter(p_val_adj < 0.05)
+
+# Annotate gene symbols
+markerGenes <- merge(markerGenes, gene.translator, by.x = "gene", by.y = "AMEXID", all.x = TRUE)
+markerGenes.significant <- merge(markerGenes.significant, gene.translator, by.x = "gene", by.y = "AMEXID", all.x = TRUE)
+
+markerGenes <- markerGenes %>% arrange(cluster, p_val_adj, avg_log2FC)
+markerGenes.significant <- markerGenes.significant %>% arrange(cluster, p_val_adj, avg_log2FC)
+
+# Save files
+#write.table(markerGenes, "Results/CellTypeAnnotation/BL_CSD_Integrated_BroadCellTypeMarkers.tsv",
+#            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+#write.table(markerGenes.significant, "Results/CellTypeAnnotation/BL_CSD_Integrated_BroadCellTypeMarkers_Significant.tsv",
+#            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+```{r annotate_singleR, echo=FALSE}
+# Load references
+hpca <- celldex::HumanPrimaryCellAtlasData()
+bpen <- celldex::BlueprintEncodeData()
+dbImm <- celldex::DatabaseImmuneCellExpressionData()
+moImm <- celldex::MonacoImmuneData()
+mmRNA <- celldex::MouseRNAseqData()
+
+# Generate reference list
+refsList <- list("hpca"=hpca ,"bpen"=bpen,"dbImm"=dbImm,"moImm"=moImm,"mmRNA"=mmRNA)
+
+# Generate list to save results
+singler <- list()
+singler_byCell <- list()
+
+# Duplicate Seurat object and change gene symbols to human
+integrated.human <- integrated.all
+genes <- rownames(integrated.human)
+genes <- gene.translator %>% filter(AMEXID %in% genes) %>% pull(Symbol)
+integrated.human@assays$RNA@counts@Dimnames[[1]] <- genes
+integrated.human@assays$RNA@data@Dimnames[[1]] <- genes
+
+# Run SingleR
+DefaultAssay(integrated.human) <- "RNA"
+for (refName in names(refsList)) {
+  if (!refName %in% names(singler)) {
+    print(paste(refName,"by cluster"))
+    singler[[refName]] <- SingleR(clusters= integrated.human$RNA_snn_res.0.25,
+                                  test = GetAssayData(integrated.human, assay = "RNA", slot = "data"),
+                                  ref = refsList[[refName]],
+                                  labels = refsList[[refName]]$label.fine,
+                                  genes = "de",
+                                  quantile = 0.8,
+                                  fine.tune = T,
+                                  tune.thresh = 0.05,
+                                  sd.thresh = 1)
+  }
+  if (!refName %in% names(singler_byCell)) {
+    print(paste(refName, "by cell"))
+    singler_byCell[[refName]] <- SingleR(clusters= NULL,
+                                  test = GetAssayData(integrated.human, assay = "RNA", slot = "data"),
+                                  ref = refsList[[refName]],
+                                  labels = refsList[[refName]]$label.fine,
+                                  genes = "de",
+                                  quantile = 0.8,
+                                  fine.tune = T,
+                                  tune.thresh = 0.05,
+                                  sd.thresh = 1)
+  }
+}
+saveRDS(singler, "~/Desktop/singler_Nastya.rds")
+saveRDS(singler_byCell, "~/Desktop/singler_bycell_Nastya.rds")
+```
+
+```{r manualAnnotation, echo=FALSE}
+Idents(integrated.all) <- "RNA_snn_res.0.25"
+markerList <- list("Bcell" = c("AMEX60DD044261", "AMEX60DD052658", "AMEX60DD043936"), #Bank1,Blnk,Pax5
+                   "CT" = c("AMEX60DD022398", "AMEX60DD055165", "AMEX60DD047546", "AMEX60DD007586", "AMEX60DD026748", "AMEX60DD018450"), #Col1a2,Col3a1,Dpt,Igfbp3,Lum,Mfap5,Prrx1
+                   "Endothelial" = c("AMEX60DD015366", "AMEX60DD050237", "AMEX60DD004804", "AMEX60DD031091", "AMEX60DD020063", "AMEX60DD006619"), #Cdh5,Eng,Lyve1,Pecam1,Tie1,Vwf
+                   "Eosinophil" = c("AMEX60DD026758", "AMEX60DD009576", "AMEX60DD048653"), #C3ar1,Cebpe,Il5ra
+                   "Epidermis" = c("AMEX60DD017034", "AMEX60DD029823", "AMEX60DD010094"), #Cdh1,Krt5,Krt17
+                   "Erythrocyte" = c("AMEX60DD025537", "AMEX60DD021527"), #Alas2,Hbg1
+                   "Hematopoietic progenitor" = c("AMEX60DD012104", "AMEX60DD049286", "AMEX60DD019146"), #Edx2,Flt3,Gfi1
+                   "Natural killer cell" = c("AMEX60DD042090", "AMEX60DD014616", "AMEX60DD028004", "AMEX60DD028068"), #Gzma,Gzmb,Itgam,Itgax
+                   "Macrophage" = c("AMEX60DD030145", "AMEX60DD027978", "AMEX60DD028004", "AMEX60DD046250"), #Csf1r,Itgal,Itgam,Siglec1
+                   "Mast cell" = c("AMEX60DD045539", "AMEX60DD019060"), #Kit, Lmo4
+                   "Neutrophil" = c("AMEX60DD034655", "AMEX60DD009576", "AMEX60DD005900", "AMEX60DD028004", "AMEX60DD049490"), # Arg1, Cebpe, Csf3r, Itgam, Mmp1
+                   "Schwann cell" = c("AMEX60DD018598", "AMEX60DD015748"), #Lamc1, Mpz
+                   "Skeletal muscle cell" = c("AMEX60DD055382", "AMEX60DD004515", "AMEX60DD008555"), # Myl1, Tnni2, Mybph
+                   "Tcell" = c("AMEX60DD010137", "AMEX60DD008149", "AMEX60DD041897"), #Ccr7,Gata3,Il7r
+                   "Thrombocyte" = c("AMEX60DD012641", "AMEX60DD001728", "AMEX60DD024035", "AMEX60DD009883")) #Gp1ba,Gp5,Gp9,Itga2b
+
+for(i in 1:length(markerList)){
+  print(VlnPlot(integrated.all, features = markerList[[i]]))
+  print(FeaturePlot(integrated.all, features = markerList[[i]]))
+}
+
+Idents(integrated.all) <-"RNA_snn_res.0.25"
+colors <- c("#c19a6b", "#fad6a5", "#4cbb17", "#89cff0", "#f6cc00", "#50c878", "#b59dfa", "#f36004", "#008ecc", "#c8ad7f", "#0b6623", "#c2b280", "#0e4d92", "#eed9c4", "#cc79a7",
+            "#3f704d", "#cc7722", "#708238", "#ef820d", "#f05e23", "#ff7417", "#883000", "#dcc7ae", "#f9812a", "#b3672b", "#999999", "#2b1e25")
+#pdf("../Figures/BL_CSD_AllCells_UMAP_ColoredByCellType.pdf", height = 5, width = 5)
+p1<- DimPlot(integrated.all, cols = colors) + theme_void() + theme(legend.position = "none")
+#dev.off()
+```
+```{r plot_by_batch, echo=FALSE}
+Idents(integrated.all) <- "batch"
+#pdf("../Figures/BL_CSD_AllCells_UMAP_ColoredByBatch.pdf", height = 5, width = 5)
+p2<-DimPlot(integrated.all, reduction = "umap") + theme_void() + theme(legend.position = "none")
+#dev.off()
+```
+```{r plot_by_injury, echo=FALSE}
+Idents(integrated.all) <- "condition"
+#pdf("../Figures/BL_CSD_AllCells_UMAP_ColoredByInjuryAndTime.pdf", height = 5, width = 5)
+p3<-DimPlot(integrated.all, reduction = "umap", 
+        cols = c("#ECB4D3", "#DD79B2", "#DD55A8", "#C33085", "#8F2361", "#5B163E", "grey50", "#C7E9C0", "#A1D99b", "#74C476", "#41AB5D", "#238B45", "#005A32")) + theme_void() +
+  theme(legend.position = "none")
+#dev.off()
+```          
+
+
+```{r celltype_score, echo=FALSE}
+integrated.all <- AddModuleScore(integrated.all, features = markerList, name = "CellTypeScore")
+
+#pdf("../Figures/BL_CSD_AllCells_CTscore.pdf", height = 5, width = 5)
+p4<-FeaturePlot(integrated.all, features = "CellTypeScore2") + 
+  scale_color_gradient2(low = "blue", mid = "grey90", high = "red", midpoint = 0) + # CT genes
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+#dev.off()
+
+#pdf("../Figures/BL_CSD_AllCells_ECscore.pdf", height = 5, width = 5)
+p5<-FeaturePlot(integrated.all, features = "CellTypeScore3")  +
+  scale_color_gradient2(low = "blue", mid = "grey90", high = "red", midpoint = 0) + # EC genes
+  theme_void()+
+  theme(legend.position = "none", plot.title = element_blank())
+#dev.off()
+
+#pdf("../Figures/BL_CSD_AllCells_EpidermisScore.pdf", height = 5, width = 5)
+p6<-FeaturePlot(integrated.all, features = "CellTypeScore5") + 
+  scale_color_gradient2(low = "blue", mid = "grey90", high = "red", midpoint = 0) + # Epidermis genes
+  theme_void()+
+  theme(legend.position = "none", plot.title = element_blank())
+#dev.off()
+
+#pdf("../Figures/BL_CSD_AllCells_RBCscore.pdf", height = 5, width = 5)
+p7<-FeaturePlot(integrated.all, features = "CellTypeScore6") + 
+  scale_color_gradient2(low = "blue", mid = "grey90", high = "red", midpoint = 0) + # RBC genes
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+#dev.off()
+
+#pdf("../Figures/BL_CSD_AllCells_MuscleScore.pdf", height = 5, width = 5)
+p8<-FeaturePlot(integrated.all, features = "CellTypeScore13") + 
+  scale_color_gradient2(low = "blue", mid = "grey90", high = "red", midpoint = 0)+ # Muscle genes
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+#dev.off()
+
+#pdf("../Figures/BL_CSD_AllCells_MACscore.pdf", height = 5, width = 5)
+p9<-FeaturePlot(integrated.all, features = "CellTypeScore9") + 
+  scale_color_gradient2(low = "blue", mid = "grey90", high = "red", midpoint = 0) + # Macro genes
+  theme_void()+
+  theme(legend.position = "none", plot.title = element_blank())
+#dev.off()
+
+#pdf("../Figures/BL_CSD_AllCells_NEUscore.pdf", height = 5, width = 5)
+p10<-FeaturePlot(integrated.all, features = "CellTypeScore11") + 
+  scale_color_gradient2(low = "blue", mid = "grey90", high = "red", midpoint = 0) + # Neurotrphil genes
+  theme_void()+
+  theme(legend.position = "none", plot.title = element_blank())
+#dev.off()
+```
+```{r build_figure, echo=FALSE}
+#plot_row1 <- grid.arrange(p1, p3, nrow = 1, ncol = 2)
+#ggsave("Figures/AllCells_UMAP_Clusters_InjuryTime.pdf", plot_row1, device = "pdf")
+plot_row2 <- grid.arrange(p4, p5, p6, p7, nrow = 1, ncol = 4)
+ggsave("Figures/AllCells_UMAP_CellTypeScore_Batch_row1.pdf", plot_row2, device = "pdf")
+plot_row3 <- grid.arrange(p8, p9, p10, p2, nrow = 1, ncol = 4)
+ggsave("Figures/AllCells_UMAP_CellTypeScore_Batch_row2.pdf", plot_row3, device = "pdf")
+#final_plot <- grid.arrange(plot_row1, plot_row2, ncol = 1, nrow = 2)
+#pdf("Figures/AllCells_UMAP_composition.pdf", height = 6, width = 6)
+#final_plot
+#dev.off()
+
+```
