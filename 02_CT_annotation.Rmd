@@ -1,0 +1,302 @@
+---
+title: "Broad cell type identification"
+author: "Inés Rivero-García"
+date: "1/18/2024"
+output: 
+  html_document:
+      theme: cerulean
+      toc: true
+      toc_float: true
+      number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/NetVolumes/TIERRA/LAB_MT/RESULTADOS/Ines/Axolotl_Limb_Regeneration/")
+
+library(Seurat)
+library(dplyr)
+library(harmony)
+library(celldex)
+library(SingleR)
+library(ggplot2)
+library(gridExtra)
+```
+
+
+```{r load_data, echo=FALSE}
+CT.all <- readRDS("Raw.data/BLct_CSDct_Harmony_SeuratObj.RDS")
+CT.filtered <- readRDS("Raw.data/BLct_CSDct_filter_Harmony_SeuratObj.RDS")
+CT.old <- readRDS("Raw.data/ConnectiveTissue_CSDandBL_Ines.RDS")
+gene.translator <- read.csv("Raw.data/AnnotationFile_AmexG_v6_chr_unscaffolded_CherryGFP_v1.2_clean.tsv",
+                            header = TRUE, sep = "\t")
+DimPlot(CT.all)
+DimPlot(CT.filtered)
+DimPlot(CT.old)
+```
+
+
+
+
+
+```{r find_markers, echo=FALSE}
+markerGenes.all <- FindAllMarkers(CT.all, logfc.threshold = 0.5, test.use = "wilcox", only.pos = TRUE)
+markerGenes.filtered <- FindAllMarkers(CT.filtered, logfc.threshold = 0.5, test.use = "wilcox", only.pos = TRUE)
+markerGenes.all.significant <- markerGenes.all %>% filter(p_val_adj < 0.05)
+markerGenes.filtered.significant <- markerGenes.filtered %>% filter(p_val_adj < 0.05)
+
+# Annotate gene symbols
+markerGenes.all <- merge(markerGenes.all, gene.translator, by.x = "gene", by.y = "AMEXID", all.x = TRUE)
+markerGenes.filtered <- merge(markerGenes.filtered, gene.translator, by.x = "gene", by.y = "AMEXID", all.x = TRUE)
+markerGenes.all.significant <- merge(markerGenes.all.significant, gene.translator, by.x = "gene", by.y = "AMEXID", all.x = TRUE)
+markerGenes.filtered.significant <- merge(markerGenes.filtered.significant, gene.translator, by.x = "gene", by.y = "AMEXID", all.x = TRUE)
+
+markerGenes.all <- markerGenes.all %>% arrange(cluster, p_val_adj, avg_log2FC)
+markerGenes.filtered <- markerGenes.filtered %>% arrange(cluster, p_val_adj, avg_log2FC)
+markerGenes.all.significant <- markerGenes.all.significant %>% arrange(cluster, p_val_adj, avg_log2FC)
+markerGenes.filtered.significant <- markerGenes.filtered.significant %>% arrange(cluster, p_val_adj, avg_log2FC)
+
+# Save files
+#write.table(markerGenes.all, "Results/CellTypeAnnotation/BL_CSD_Integrated_allCT_Markers.tsv",
+#            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+#write.table(markerGenes.all.significant, "Results/CellTypeAnnotation/BL_CSD_Integrated_allCT_Markers_Significant.tsv",
+#            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+#write.table(markerGenes.filtered, "Results/CellTypeAnnotation/BL_CSD_Integrated_filteredCT_Markers.tsv",
+#            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+#write.table(markerGenes.filtered.significant, "Results/CellTypeAnnotation/BL_CSD_Integrated_filteredCT_Markers_Significant.tsv",
+#            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+```{r annotate_singleR, echo=FALSE}
+# Load references
+hpca <- celldex::HumanPrimaryCellAtlasData()
+bpen <- celldex::BlueprintEncodeData()
+mmRNA <- celldex::MouseRNAseqData()
+
+# Generate reference list
+refsList <- list("hpca"=hpca ,"bpen"=bpen,"mmRNA"=mmRNA)
+
+# Generate list to save results
+singler.all <- list()
+singler.filtered <- list()
+singler_byCell.all <- list()
+singler_byCell.filtered <- list()
+
+# Duplicate Seurat object and change gene symbols to human
+CT.all.human <- CT.all
+CT.filtered.human <- CT.filtered
+genes.all <- rownames(CT.all.human)
+genes.filtered <- rownames(CT.filtered.human)
+genes.all <- gene.translator %>% filter(AMEXID %in% genes.all) %>% pull(Symbol)
+genes.filtered <- gene.translator %>% filter(AMEXID %in% genes.filtered) %>% pull(Symbol)
+CT.all.human@assays$RNA@data@Dimnames[[1]] <- genes.all
+CT.filtered.human@assays$RNA@data@Dimnames[[1]] <- genes.filtered
+
+# Run SingleR
+DefaultAssay(CT.all.human) <- "RNA"
+DefaultAssay(CT.filtered.human) <- "RNA"
+for (refName in names(refsList)) {
+  if (!refName %in% names(singler.all)) {
+    print(paste(refName,"by cluster"))
+    singler.all[[refName]] <- SingleR(clusters= CT.all.human$RNA_snn_res.1,
+                                  test = GetAssayData(CT.all.human, assay = "RNA", slot = "data"),
+                                  ref = refsList[[refName]],
+                                  labels = refsList[[refName]]$label.fine,
+                                  genes = "de",
+                                  quantile = 0.8,
+                                  fine.tune = T,
+                                  tune.thresh = 0.05,
+                                  sd.thresh = 1)
+  }
+  if (!refName %in% names(singler.filtered)) {
+    print(paste(refName,"by cluster"))
+    singler.filtered[[refName]] <- SingleR(clusters= CT.filtered.human$RNA_snn_res.0.6,
+                                  test = GetAssayData(CT.filtered.human, assay = "RNA", slot = "data"),
+                                  ref = refsList[[refName]],
+                                  labels = refsList[[refName]]$label.fine,
+                                  genes = "de",
+                                  quantile = 0.8,
+                                  fine.tune = T,
+                                  tune.thresh = 0.05,
+                                  sd.thresh = 1)
+  }
+  if (!refName %in% names(singler_byCell.all)) {
+    print(paste(refName, "by cell"))
+    singler_byCell.all[[refName]] <- SingleR(clusters= NULL,
+                                  test = GetAssayData(CT.all.human, assay = "RNA", slot = "data"),
+                                  ref = refsList[[refName]],
+                                  labels = refsList[[refName]]$label.fine,
+                                  genes = "de",
+                                  quantile = 0.8,
+                                  fine.tune = T,
+                                  tune.thresh = 0.05,
+                                  sd.thresh = 1)
+  }
+  if (!refName %in% names(singler_byCell.filtered)) {
+    print(paste(refName, "by cell"))
+    singler_byCell.filtered[[refName]] <- SingleR(clusters= NULL,
+                                  test = GetAssayData(CT.filtered.human, assay = "RNA", slot = "data"),
+                                  ref = refsList[[refName]],
+                                  labels = refsList[[refName]]$label.fine,
+                                  genes = "de",
+                                  quantile = 0.8,
+                                  fine.tune = T,
+                                  tune.thresh = 0.05,
+                                  sd.thresh = 1)
+  }
+}
+```
+
+```{r manualAnnotation, echo=FALSE}
+markerList <- list("Periskeleton" = c("AMEX60DD005922"), # Col8a2
+                   "Tenocyte" = c("AMEX60DD037674"), # Tnmd
+                   "DermalFB" = c("AMEX60DD055512"), # Twist2
+                   "InterstitialFB" = c("AMEX60DD047874", "AMEX60DD038152", "AMEX60DD026748"), # Col4a2, Igfbp3, Mfap5
+                   "Osteoblast" = c("AMEX60DD032921", "AMEX60DD054625", "AMEX60DD001056", "AMEX60DD001050"), # Runx2, Tbx2, Tbx3, Tbx5
+                   "Osteoclast" = c("AMEX60DD031988", "AMEX60DD022255", "AMEX60DD032921"), # Acp5, Calcr, Runx2
+                   "Chondrocyte" = c("AMEX60DD029426", "AMEX60DD031236") # Col2a1, Sox9
+                   ) 
+
+for(i in 1:length(markerList)){
+  print(VlnPlot(CT.all, features = markerList[[i]]))
+  print(FeaturePlot(CT.all, features = markerList[[i]]))
+}
+
+for(i in 1:length(markerList)){
+  print(VlnPlot(CT.filtered, features = markerList[[i]]))
+  print(FeaturePlot(CT.filtered, features = markerList[[i]]))
+}
+```
+```{r transfer_labels, echo=FALSE}
+anchors.all <- FindTransferAnchors(reference = CT.old, query = CT.all, dims = 1:20, reference.reduction = "pca")
+CT.old.labels <- TransferData(anchorset = anchors.all, refdata = CT.old$RNA_snn_res.0.35_connectiveOnly_Limb)
+CT.all <- AddMetaData(CT.all, metadata = CT.old.labels)
+
+anchors.filtered <- FindTransferAnchors(reference = CT.old, query = CT.filtered, dims = 1:20, reference.reduction = "pca")
+CT.old.labels <- TransferData(anchorset = anchors.filtered, refdata = CT.old$RNA_snn_res.0.35_connectiveOnly_Limb)
+CT.filtered <- AddMetaData(CT.filtered, metadata = CT.old.labels)
+
+View(CT.all@meta.data)
+Idents(CT.all) <- "RNA_snn_res.1"
+DimPlot(CT.all)
+DimPlot(CT.old)
+Idents(CT.all)<-"predicted.id"
+DimPlot(CT.all)
+
+DimPlot(CT.filtered)
+DimPlot(CT.old)
+Idents(CT.filtered) <- "predicted.id"
+DimPlot(CT.filtered)
+```
+```{r cont, echo=FALSE}
+Idents(CT.filtered) <-"RNA_snn_res.0.6"
+colors <- c("#56b4e9", "#cc79a7", "orange", "#6a3d9a", "#0072b2", "#b15928", "#ff7f00")
+#pdf("../Figures/BL_CSD_AllCells_UMAP_ColoredByCellType.pdf", height = 5, width = 5)
+p1 <- DimPlot(CT.filtered, cols = colors) + theme_void() + theme(legend.position = "none")
+#dev.off()
+```
+```{r plot_by_injury, echo=FALSE}
+Idents(CT.filtered) <- "orig.ident"
+#pdf("../Figures/BL_CSD_AllCells_UMAP_ColoredByInjuryAndTime.pdf", height = 5, width = 5)
+p2<-DimPlot(CT.filtered, reduction = "umap", 
+        cols = c("#ECB4D3", "#DD79B2", "#DD55A8", "#C33085", "#8F2361", "#5B163E", "#C7E9C0", "#A1D99b", "#74C476", "#41AB5D", "#238B45", "#005A32")) + theme_void() +
+  theme(legend.position = "none")
+#dev.off()
+```          
+
+
+```{r pst_plot, echo=FALSE}
+p3 <- FeaturePlot(CT.filtered, features = "pt_rank_norm") + 
+  scale_color_viridis_c(option = "viridis") + 
+  theme_void() + 
+  theme(legend.position = "none", plot.title = element_blank())
+```
+```{r celltype_score, echo=FALSE}
+p4<-FeaturePlot(CT.filtered, features = "AMEX60DD046379", cols = c("grey90", "red")) + # KAZALD1 BL marker
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+
+p5 <- FeaturePlot(CT.filtered, features = "AMEX60DD055610", cols = c("grey90", "red")) + 
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+
+p6<-FeaturePlot(CT.filtered, features = "AMEX60DD032922", cols = c("grey90", "red"))  + # Runx2 collagen/skeletal precursor gene
+  theme_void()+
+  theme(legend.position = "none", plot.title = element_blank())
+
+p7 <- FeaturePlot(CT.filtered, features = "AMEX60DD049736", cols = c("grey90", "red")) + # Lrrc32 regulates Tgfb.
+  theme_void()+
+  theme(legend.position = "none", plot.title = element_blank())
+
+p8 <- FeaturePlot(CT.filtered, features = "AMEX60DD010491", cols = c("grey90", "red")) + 
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+
+p9 <- FeaturePlot(CT.filtered, features = "AMEX60DD049348", cols = c("grey90", "red")) + 
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+```
+```{r cellcycle, echo=FALSE}
+cellcycle.df <- CT.filtered@meta.data[, c("injury", "Phase", "time")]
+cellcycle.df1 <- table(cellcycle.df[, c("injury", "Phase")])
+cellcycle.df2 <- table(cellcycle.df)
+cellcycle.df1 <- as.data.frame(cellcycle.df1)
+cellcycle.df2 <- as.data.frame(cellcycle.df2)
+cellcycle.df2$injury <- as.character(cellcycle.df2$injury)
+cellcycle.df2$injury[cellcycle.df2$injury == "BL"] <- "Blastema"
+colnames(cellcycle.df2) <- c("injury", "Cell cycle phase", "time", "Freq")
+ggplot(cellcycle.df1, aes(x = injury, y = Freq, fill = Phase)) + geom_bar(position="fill", stat="identity")
+
+svg("Figures/CT_CellCycle_Barplot.svg", height = 4, width = 8)
+ggplot(cellcycle.df2, aes(x = time, y = Freq, fill = `Cell cycle phase`)) + 
+  geom_bar(position="fill", stat="identity", color = "black") + 
+  facet_wrap(~ injury) +
+  scale_fill_manual(values = c("black", "grey50", "white")) + 
+  theme_bw() +
+  xlab("Days post-injury (dpi)") +
+  ylab("Percentage of cells")
+dev.off()
+```
+```{r build_figure, echo=FALSE}
+pdf("Figures/Fig_5.8_CT_cells.pdf", width = 9, height = 6)
+grid.arrange(
+  arrangeGrob(p1, p2, p3, ncol = 3, nrow = 1),
+  arrangeGrob(p4, p5, p6, p7, p8, p9, ncol = 6, nrow = 1),
+  ncol = 1,
+  nrow = 2
+)
+dev.off()
+```
+```{r high.res.cluster, echo=FALSE}
+Idents(CT.filtered) <- "RNA_snn_res.1"
+pdf("Figures/CT_HighResClusters.pdf")
+DimPlot(CT.filtered, 
+        cols = c("orange", "grey50", "grey75", "grey75", "grey50", "grey25", "grey50", "cornflowerblue", "grey75", "grey25")) +
+  theme_void() +
+  theme(legend.position = "none")
+dev.off()
+DimPlot(CT.filtered, label = TRUE)
+markers <- FindAllMarkers(CT.filtered, test.use = "wilcox")
+DEG_0_vs_7_higres <- FindMarkers(CT.filtered, ident.1 = "0", ident.2 = "7", test.use = "wilcox", logfc.threshold = 0)
+
+markers$AMEXID <- rownames(markers)
+markers <- merge(markers, gene.translator, by = "AMEXID", all.x = TRUE)
+head(markers)
+write.table(markers, "Results/CellTypeAnnotation/BL_CSD_Integrated_filteredCT_HighResClusters_Markers.tsv",
+            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+
+DEG_0_vs_7_higres$AMEXID <- rownames(DEG_0_vs_7_higres)
+DEG_0_vs_7_higres <- merge(DEG_0_vs_7_higres, gene.translator, by = "AMEXID", all.x = TRUE)
+write.table(DEG_0_vs_7_higres, "Results/CellTypeAnnotation/BL_CSD_Integrated_filteredCT_HighResClusters_c0vs7.tsv",
+            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+
+DEG_0_vs_7_higres <- DEG_0_vs_7_higres[order(DEG_0_vs_7_higres$avg_log2FC),]
+ranks <- DEG_0_vs_7_higres$avg_log2FC
+names(ranks) <- DEG_0_vs_7_higres$Symbol
+
+library(fgsea)
+m5.bp <- gmtPathways("~/NetVolumes/TIERRA/LAB_MT/RESULTADOS/Ines/MSigDB_Mmusculus/m5.go.bp.v2023.1.Mm.symbols.gmt")
+GSEA.result <- fgsea(pathways = m5.bp, stats = ranks)
+View(GSEA.result)
+head(ranks)
+```
