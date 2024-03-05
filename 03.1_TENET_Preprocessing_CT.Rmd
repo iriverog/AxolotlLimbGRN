@@ -1,0 +1,200 @@
+---
+title: "Filtering before TENET"
+author: "Inés Rivero-García"
+date: "5/19/2023"
+output: html_document
+---
+
+This script filters CSD and BL connective tissue gene expression and prepares the files needed to run TENET.
+
+
+```{r loadLibraries, include=FALSE, message=FALSE, warning=FALSE}
+library(Seurat)
+library(matrixStats)
+library(ggvenn)
+```
+
+
+# Load data
+In this step we load the Seurat object with the integrated and filtered CT. Then, we split it into two objects, one containing the BL cells and one containing the CSD cells. The reason for this is that we want to run TENET separately on BL and CSD, since they're two different conditions.
+```{r loadData, echo=FALSE}
+knitr::opts_knit$set(root.dir = "/data_lab_MT/Ines/Tanaka/BoneRegeneration/UpdateBatch2")
+CT <- readRDS("../UpdateBatch2/Raw.data/BLct_CSDct_filter_Harmony_SeuratObj.RDS")
+dictionary <- read.csv("../Raw.data/AnnotationFile_AmexG_v6_chr_unscaffolded_CherryGFP_Ines.tsv",
+                       header = TRUE, sep = "\t")
+
+colorsCT <- c("grey50", "#C7E9C0", "#A1D99B", "#A1D99B", "#74C476", "#41AB5D", 
+              "#238B45", "#005A32", "#ECB4D3", "#DD79B2", "#DD55A8", "#C33085", 
+              "#8F2361", "#5B163E")
+names(colorsCT) <- c("CSD_0dpa", "CSD_3dpa", "CSD_5dpa_A", "CSD_5dpa_B", "CSD_6dpa",
+                     "CSD_7dpa", "CSD_8dpa", "CSD_11dpa", "BL_3_5dpa", "BL_5dpa",
+                     "BL_6dpa", "BL_7dpa", "BL_8dpa", "BL_11dpa")
+Idents(CT) <- "orig.ident"
+DimPlot(CT, cols = colorsCT)
+Idents(CT) <- "seurat_clusters"
+DimPlot(CT, label = TRUE)
+
+# Separate BL from CSD
+Idents(CT) <- "injury"
+BL <- subset(CT, idents = "BL")
+CSD <- subset(CT, idents = "CSD") # I already checked that uninjured samples
+                                  # (CSD_0dpa) aren't inside the CSD object.
+
+# Get matrix of raw and normalized counts
+BLr <- GetAssayData(BL, assay = "RNA", slot = "counts")
+CSDr <- GetAssayData(CSD, assay = "RNA", slot = "counts")
+BLn <- GetAssayData(BL, assay = "RNA", slot = "data")
+CSDn <- GetAssayData(CSD, assay = "RNA", slot = "data")
+
+# Remove mCherry and eGFP.
+keep <- setdiff(rownames(BLn), c("mCherry", "eGFP"))
+BLn <- BLn[keep,]
+BLr <- BLr[keep,]
+keep <- setdiff(rownames(CSDn), c("mCherry", "eGFP"))
+CSDn <- CSDn[keep,]
+CSDr <- CSDr[keep,]
+```
+
+
+# Filtering before TENET
+**Count filter**: we choose > 1 log-norm counts as expression filter because it is a standard expression filter. The authors of TENET used this same filter.
+**Cell filter**: we decided to add a minimum number of cells filter to avoid including genes that pass the expression filter in just a single cell. This filter should not be too strict to avoid loosing genes that are important in small populations. We decided to choose > 2% as number of cells filter because it's the highest threshold that is smaller than the number of cells of either BL/CSD in each cluster.
+```{r cellsCT, echo=FALSE}
+cellsCluster <- as.data.frame(table(CT$seurat_clusters))
+cellsClusterBL <- as.data.frame(table(BL$seurat_clusters))
+cellsClusterCSD <- as.data.frame(table(CSD$seurat_clusters))
+
+cellsCluster <- merge(cellsCluster, cellsClusterBL, by = "Var1")
+colnames(cellsCluster) <- c("Var1", "NrCellsTotal", "NrCellsBL")
+cellsCluster <- merge(cellsCluster, cellsClusterCSD, by = "Var1")
+colnames(cellsCluster) <- c("Cluster", "NrCellsTotal", "NrCellsBL", "NrCellsCSD")
+cellsCluster
+```
+
+```{r filteringFunction, include=FALSE}
+filtering <- function(x, countFilter = 1, cellFilter = 1){
+  k1 <- x > countFilter
+  k2 <- sum(k1) > cellFilter
+  return(k2)
+}
+```
+
+## Filtering BL
+```{r filterBL, echo=FALSE}
+cellFilterBL <- round(ncol(BLn) * 0.02)
+keepBL2 <- apply(BLn, 1, function(x) filtering(x, countFilter = 1, cellFilter = cellFilterBL))
+table(keepBL2)
+
+# Subset matrices 
+BLr <- BLr[keepBL2, ]
+BLn <- BLn[keepBL2, ]
+```
+
+## Filtering CSD
+```{r filterCSD, echo=FALSE}
+cellFilterCSD <- round(ncol(CSDn) * 0.02)
+keepCSD2 <- apply(CSDn, 1, function(x) filtering(x, countFilter = 1, cellFilter = cellFilterCSD))
+table(keepCSD2)
+
+# Subset matrices 
+CSDr <- CSDr[keepCSD2, ]
+CSDn <- CSDn[keepCSD2, ]
+```
+
+
+## Compare the two gene sets
+```{r compare1, echo=FALSE, fig.width=7}
+geneset <- list(genesBL = rownames(BLn),
+                genesCSD = rownames(CSDn))
+
+ggvenn(data = geneset, fill_color = c("forestgreen", "hotpink3"), auto_scale = TRUE, text_size = 3.5)
+```
+```{r calculate variability, echo=FALSE}
+library(scry)
+library(SingleCellExperiment)
+
+BLsce <- SingleCellExperiment(list(counts=GetAssayData(BL, assay = "RNA", slot = "counts")),
+    colData=DataFrame(BL@meta.data),
+    rowData=DataFrame(Gene=rownames(BL)))
+
+BLsce <- devianceFeatureSelection(BLsce, assay="counts", sorted=TRUE)
+BLdeviance <- rowData(BLsce)$binomial_deviance
+
+topDeviantBL <- BLdeviance[BLdeviance > quantile(BLdeviance, prob = 0.75)]
+topDeviantBL <- names(topDeviantBL)
+table(rownames(BLn) %in% topDeviantBL)
+
+CSDsce <- SingleCellExperiment(list(counts=GetAssayData(CSD, assay = "RNA", slot = "counts")),
+    colData=DataFrame(CSD@meta.data),
+    rowData=DataFrame(Gene=rownames(CSD)))
+CSDsce <- devianceFeatureSelection(CSDsce, assay="counts", sorted=TRUE)
+CSDdeviance <- rowData(CSDsce)$binomial_deviance
+
+topDeviantCSD <- CSDdeviance[CSDdeviance > quantile(CSDdeviance, prob = 0.75)]
+topDeviantCSD <- names(topDeviantCSD)
+table(rownames(CSDn) %in% topDeviantCSD)
+
+BL <- FindVariableFeatures(BL, nfeatures = 10000, selection.method = "disp")
+CSD <- FindVariableFeatures(CSD, nfeatures = 10000, selection.method = "disp")
+
+BL.genes.st.var <- BL@assays$RNA@meta.features
+BL.genes.st.var$GRN <- ifelse(rownames(BL.genes.st.var) %in% rownames(BLn), TRUE, FALSE)
+ggplot(BL.genes.st.var, aes(x = mvp.mean, y = mvp.dispersion, color = GRN)) + geom_point() + ggtitle("BL genes")
+
+CSD.genes.st.var <- CSD@assays$RNA@meta.features
+CSD.genes.st.var$GRN <- ifelse(rownames(CSD.genes.st.var) %in% rownames(CSDn), TRUE, FALSE)
+ggplot(CSD.genes.st.var, aes(x = mvp.mean, y = mvp.dispersion, color = GRN)) + geom_point() + ggtitle("CSD genes")
+```
+```{r compare2, echo=FALSE, fig.height=10}
+Idents(CT) <- "orig.ident"
+DoHeatmap(CT, features = setdiff(geneset$genesBL, geneset$genesCSD))
+DoHeatmap(CT, features = setdiff(geneset$genesCSD, geneset$genesBL))
+DoHeatmap(CT, features = intersect(geneset$genesBL, geneset$genesCSD))
+Idents(CT) <- "seurat_clusters"
+DoHeatmap(CT, features = setdiff(geneset$genesBL, geneset$genesCSD))
+DoHeatmap(CT, features = setdiff(geneset$genesCSD, geneset$genesBL))
+DoHeatmap(CT, features = intersect(geneset$genesBL, geneset$genesCSD))
+
+```
+# Prepare files for TENET
+**Expression matrix**: csv file with genes as columns and cells as rows. Raw counts are recommended.
+**Cell trajectory file**: txt file with the normalized pseudotime rank for each cells. The pseudotime ranks must be in the same order as the cells are in the expression matrix.
+**Cell selection file**: determines which cells will be used for analysis (all cells in our case).
+```{r TENETfiles, include=FALSE}
+# Expression matrices
+BLr <- as.matrix(BLr)
+BLr <- t(BLr)
+write.table(BLr, "../UpdateBatch2/TENET-master/20230526_BLct_TENET_ExpressionMatrix.csv",
+            sep = ",", quote = FALSE, col.names = TRUE, row.names = TRUE)
+
+CSDr <- as.matrix(CSDr)
+CSDr <- t(CSDr)
+write.table(CSDr, "../UpdateBatch2/TENET-master/20230526_CSDct_TENET_ExpressionMatrix.csv",
+            sep = ",", quote = FALSE, col.names = TRUE, row.names = TRUE)
+
+# Trajectory files
+sum(rownames(BL@meta.data) == rownames(BLr)) # Check that the cells are in the right order
+BLtrajectory <- BL$pt_rank_norm
+BLrealtime <- BL$time
+write.table(BLtrajectory, "../UpdateBatch2/TENET-master/20230526_BLct_TENET_TrajectoryFile.txt",
+            sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+write.table(BLrealtime, "../UpdateBatch2/TENET-master/20230616_BLct_TENET_RealTimePoints.txt",
+            sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+
+sum(rownames(CSD@meta.data) == rownames(CSDr))
+CSDtrajectory <- CSD$pt_rank_norm
+CSDrealtime <- CSD$time
+write.table(CSDtrajectory, "../UpdateBatch2/TENET-master/20230526_CSDct_TENET_TrajectoryFile.txt",
+            sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+write.table(CSDrealtime, "../UpdateBatch2/TENET-master/20230616_CSDct_TENET_RealTimePoints.txt",
+            sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+
+# Cell select: we use all cells so we simply need a vector of "1" as long as cells we have.
+BLcells <- rep(1, length(BLtrajectory))
+write.table(BLcells, "../UpdateBatch2/TENET-master/20230526_BLct_TENET_SelectedCells.txt",
+            sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+
+CSDcells <- rep(1, length(CSDtrajectory))
+write.table(CSDcells, "../UpdateBatch2/TENET-master/20230526_CSDct_TENET_SelectedCells.txt",
+            sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+``` 
