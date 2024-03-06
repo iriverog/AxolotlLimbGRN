@@ -1,0 +1,157 @@
+---
+title: "Find candidate genes TENET"
+author: "Inés Rivero-García"
+date: "7/4/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/NetVolumes/LAB_MT/RESULTADOS/Ines/Axolotl_Limb_Regeneration/")
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+```
+```{r load_data, include=FALSE}
+BL <- read.csv("Results/TENET_GRNI/BLct_TENET_Batch1and2_RealTime_FinalNodeTable_989nodes.tsv",
+               header = TRUE, sep = "\t")
+CSD <- read.csv("Results/TENET_GRNI/CSDct_TENET_Batch1and2_RealTime_FinalNodeTable_2524nodes.tsv",
+                header = TRUE, sep = "\t")
+CT <- readRDS("Raw.data/BLct_CSDct_filter_Harmony_SeuratObj.RDS")
+
+```
+
+
+# Step1: merge the two networks and compare rankings.
+Genes that are present only in net1 will all get the rank nrgenes(net2)+1
+```{r compareRankings, echo=FALSE}
+# Create df with both rankings for the union of genes
+df <- merge(BL[,c("AMEXID", "Symbol", "BetweennessBLRanking")], CSD[,c("AMEXID", "Symbol", "BetweennessCSDRanking")], 
+            all = TRUE, by = c("AMEXID", "Symbol"))
+genesBL <- nrow(BL)+1
+genesCSD <- nrow(CSD)+1
+df[is.na(df$BetweennessBLRanking), "BetweennessBLRanking"] <- genesBL
+df[is.na(df$BetweennessCSDRanking), "BetweennessCSDRanking"] <- genesCSD
+
+# Compare the ranks: rankCSD - rankBL
+df$CompareRanks <- df$BetweennessCSDRanking - df$BetweennessBLRanking
+ggplot(df, aes(x = CompareRanks)) + 
+  geom_density(fill = "grey80") +
+  xlim(c(-3000, 3000)) +
+  theme_classic() +
+  ggtitle("Distribution of ranking differences") +
+  xlab("RankCSD - RankBL") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Calculate zscores
+df$CompareRanks_Zscore = scale(df$CompareRanks)
+ggplot(df, aes(x = CompareRanks_Zscore)) + 
+  geom_density(fill = "grey80") +
+  xlim(c(-3, 3)) +
+  theme_classic() +
+  ggtitle("Distribution of ranking differences as z-scores") +
+  xlab("RankCSD - RankBL") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Pre-select candidates
+df <- df[order(df$CompareRanks_Zscore),]
+rownames(df) <- 1:nrow(df)
+toplimit <- round(nrow(df)*0.25)
+bottomlimit <- round(nrow(df) - nrow(df)*0.25)
+df.zfilter <- df[c(1:toplimit, bottomlimit:nrow(df)),]
+
+```
+
+
+# Step2: consider differential expression
+```{r compareRankings2, echo=FALSE}
+Idents(CT) <- "time"
+CT3 <- subset(CT, idents = "3")
+
+Idents(CT3) <- "injury"
+markers3 <- FindMarkers(CT3, ident.1 = "BL", ident.2 = "CSD", logfc.threshold = 0.25, test.use = "wilcox")
+markers_for_plotting <- FindMarkers(CT3, ident.1 = "BL", ident.2 = "CSD", logfc.threshold = 0, test.use = "wilcox")
+markers3$AMEXID <- rownames(markers3)
+markers_for_plotting$AMEXID <- rownames(markers_for_plotting)
+
+df <- merge(df, markers_for_plotting, all.x = TRUE, by = "AMEXID")
+df.zfilter <- merge(df.zfilter, markers3, all.x = TRUE, by = "AMEXID")
+
+df.zfilter$p_val_adj[is.na(df.zfilter$p_val_adj)] <- 1 # For filtering
+
+# Keep differentially expressed genes
+df.zfilter.diffex <- df.zfilter %>% filter(p_val_adj < 0.05)
+```
+
+
+# Identify TFs
+```{r findTFs, echo=FALSE}
+# Add info: which are TFs.
+TFs <- readRDS("Raw.data/AnimalTFDB_HomoSapiens_TF_AMEX.RDS")
+df$IsTF <- ifelse(df$AMEXID %in% TFs$value, TRUE, FALSE)
+df.zfilter$IsTF <- ifelse(df.zfilter$AMEXID %in% TFs$value, TRUE, FALSE)
+df.zfilter.diffex$IsTF <- ifelse(df.zfilter.diffex$AMEXID %in% TFs$value, TRUE, FALSE)
+```
+
+```{r candidateplot,echo=FALSE}
+df$Classification <- NA
+df$avg_log2FC[is.na(df$avg_log2FC)] <- 0 # For plotting
+for(i in 1:nrow(df)){
+  # Keep as 0 those genes which log2FC was not even tested
+  if(abs(df[i, "avg_log2FC"]) < 0.25){
+    df[i, "Classification"] <- "|Log2FC| < 0.25"
+  }else{
+    # Genes with a log2FC > 0.25 that did not pass the z-score filter
+    if(!is.element(df[i,"AMEXID"], df.zfilter$AMEXID)){
+      df[i, "Classification"] <- "|Log2FC| > 0.25, z-score not in top 25% genes"
+    }else{
+      if(df[i, "AMEXID"] %in% df.zfilter$AMEXID){
+        if(df[i, "AMEXID"] %in% df.zfilter.diffex$AMEXID){
+          df[i, "Classification"] <- "|Log2FC| > 0.25 and z-score in top25% genes" # 2 means that the gene passes Z-score and log2FC filter.
+        }else{
+          df[i, "Classification"]<- "|Log2FC| < 0.25, z-score in top25% genes" # 1 means that the gene only passes Z-score filter.
+        }
+      }
+    }
+  }
+}
+
+df$Classification <- factor(df$Classification, levels = c("|Log2FC| < 0.25",
+                                                          "|Log2FC| > 0.25, z-score not in top 25% genes",
+                                                          "|Log2FC| < 0.25, z-score in top25% genes",
+                                                          "|Log2FC| > 0.25 and z-score in top25% genes"))
+svg("Figures/ScatterPlot_Compare_Betweenness_Log2FC.svg", height = 6, width = 10)
+ggplot() +
+  geom_point(data = df, aes(x = CompareRanks_Zscore, y = avg_log2FC, color = Classification)) +
+  geom_label_repel(data = df.zfilter.diffex[df.zfilter.diffex$IsTF == TRUE,], aes(label = Symbol, x = CompareRanks_Zscore, y = avg_log2FC),
+                   min.segment.length = 0)+
+  scale_color_manual(values = c("grey90", "grey75", "grey50", "black")) +
+  theme_classic() +
+  theme(legend.position = "right") +
+  ylab("Average log2FC") +
+  xlab("Z-score(BetweennessCSD - BetweennessBL)")
+dev.off()
+```
+```{r save_candidate_table, echo=FALSE}
+write.table(df.zfilter.diffex, "Results/TENET_GRNI/SelectedCandidates_ZScoreBetweenness_Log2FC.tsv",
+            col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+```{r plot_lef1_tcf7l2}
+lef1 <- FeaturePlot(CT, features = "AMEX60DD044502", cols = c("grey90", "red")) + 
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+
+tcf7l2 <- FeaturePlot(CT, features = "AMEX60DD053152", cols = c("grey90", "red")) + 
+  theme_void() +
+  theme(legend.position = "none", plot.title = element_blank())
+
+svg("Figures/Lef1_UMAP.svg", height = 3, width = 3)
+lef1
+dev.off()
+
+svg("Figures/Tcf7l2_UMAP.svg", height = 3, width = 3)
+tcf7l2
+dev.off()
+```
