@@ -1,0 +1,249 @@
+---
+title: "Fit power law"
+author: "Inés Rivero-García"
+date: "7/4/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/NetVolumes/LAB_MT/RESULTADOS/Ines/Axolotl_Limb_Regeneration/")
+
+set.seed(452)
+
+library(igraph)
+library(ggplot2)
+library(poweRlaw)
+```
+
+
+We can have 3 types of networks:
+
+* Random: P(k) ~ Poisson(k), C(k) independent from k.
+* Scale-free: P(k) ~ k^(-gamma), C(k) independent from k.
+* Hierarchical: P(k) ~ k^(-gamma), C(k) ~ k^(-1).
+
+# Fitting a power-law to Blastema.
+```{r blastema_powerlaw, echo=FALSE}
+# Load BL network
+BLct =  read.csv("Results/TENET_GRNI/BLct_TENET_Batch1and2_RealTime_FinalEdgeTable_2390edges_989nodes.tsv",
+                  header = TRUE, sep = "\t")
+BLct = BLct[, c("Source_AMEXID", "Target_AMEXID", "TE")] # Clean table
+
+# Create an igraph object
+gBLct = graph_from_data_frame(BLct[, c("Source_AMEXID", "Target_AMEXID")], directed = TRUE)
+E(gBLct)$weight = BLct$TE
+
+# Get out-degree
+bl.degree <- degree(gBLct, mode = "out")
+
+# Fit power-law using poweRlaw package
+bl_pl = displ$new(bl.degree) 
+est = estimate_xmin(bl_pl)
+bl_pl$setXmin(est) 
+bl_pl
+
+plot(bl_pl) ## Plot the data (from xmin)
+lines(bl_pl, col = 2) ## Add in the fitted distribution # x is degree (k) and y is P(k)
+
+# Test if blastema follows a power-law
+fit_power_law(bl.degree)
+
+# Nice power-law plot
+degree.bl.df <- data.frame(k = bl_pl$internal$value, Pk = bl_pl$internal$freq/989)
+
+#svg("Figures/BL_powerlaw.svg", height = 4, width = 4)
+ggplot() +
+  geom_point(data = degree.bl.df, aes(x = k, y = Pk), color = "forestgreen") + 
+  geom_smooth(data = degree.bl.df, aes(x = k, y = Pk),method = "lm", formula = y ~ x, se = TRUE, color = "forestgreen") +
+  theme_classic() +
+  scale_x_log10() +
+  scale_y_log10() +
+  xlab("k") +
+  ylab("P(k)") +
+  theme(text = element_text(size = 14))
+#dev.off()
+```
+
+
+# Checking BL modularity
+```{r bl_modularity, echo=FALSE}
+# Calculate C per gene.
+Ck.bl <- igraph::transitivity(gBLct, type = "local")
+
+# Fit linear model
+lm.bl <- lm(Ck.bl ~ 1/bl.degree)
+summary(lm.bl)
+
+# Nice plotting
+Ck.bl.df <- data.frame(k = bl.degree, Ck = Ck.bl)
+
+#svg("Figures/BL_Ck_k.svg", height = 4, width = 4)
+ggplot() +
+  geom_point(data = Ck.bl.df, aes(x = k, y = Ck), color = "forestgreen") + 
+  geom_smooth(data = Ck.bl.df, aes(x = k, y = Ck),method = "lm", formula = y ~ x, se = TRUE, color = "forestgreen") +
+  theme_classic() +
+  scale_x_log10() +
+  scale_y_log10() +
+  xlab("k") +
+  ylab("C(k)") +
+  theme(text = element_text(size = 14))
+#dev.off()
+```
+
+
+# Fit CDS power-law
+```{r CSD_powerlaw, echo=FALSE}
+# Load BL network
+CSDct =  read.csv("Results/TENET_GRNI/CSDct_TENET_Batch1and2_RealTime_FinalEdgeTable_2524edges_4128nodes.tsv",
+                  header = TRUE, sep = "\t")
+CSDct = CSDct[, c("Source_AMEXID", "Target_AMEXID", "TE")] # Clean table
+
+# Create an igraph object
+gCSDct = graph_from_data_frame(CSDct[, c("Source_AMEXID", "Target_AMEXID")], directed = TRUE)
+E(gCSDct)$weight = CSDct$TE
+
+# Get out-degree
+csd.degree <- degree(gCSDct, mode = "out")
+
+# Fit power-law using poweRlaw package
+csd_pl = displ$new(csd.degree) 
+est = estimate_xmin(csd_pl)
+csd_pl$setXmin(est) 
+csd_pl
+
+plot(csd_pl) ## Plot the data (from xmin)
+lines(csd_pl, col = 2) ## Add in the fitted distribution # x is degree (k) and y is P(k)
+
+# Test if blastema follows a power-law
+fit_power_law(csd.degree)
+
+# Nice power-law plot
+degree.csd.df <- data.frame(k = csd_pl$internal$value, Pk = csd_pl$internal$freq/2524)
+
+#svg("Figures/CSD_powerlaw.svg", height = 4, width = 4)
+ggplot() +
+  geom_point(data = degree.csd.df, aes(x = k, y = Pk), color = "hotpink3") + 
+  geom_smooth(data = degree.csd.df, aes(x = k, y = Pk),method = "lm", formula = y ~ x, se = TRUE, color = "hotpink3") +
+  theme_classic() +
+  scale_x_log10() +
+  scale_y_log10() +
+  xlab("k") +
+  ylab("P(k)") +
+  theme(text = element_text(size = 14))
+#dev.off()
+```
+
+
+# Remove CSD genes until the power-law is fit
+```{r prune_csd, echo=FALSE}
+# xmin = 2
+powerlaw.csd <- igraph::fit_power_law(csd.degree, xmin = 2, force.continuous = FALSE, implementation = "plfit")
+powerlaw.csd
+
+# xmin = 3
+powerlaw.csd <- igraph::fit_power_law(csd.degree, xmin = 3, force.continuous = FALSE, implementation = "plfit")
+powerlaw.csd
+
+# xmin = 4
+powerlaw.csd <- igraph::fit_power_law(csd.degree, xmin = 4, force.continuous = FALSE, implementation = "plfit")
+powerlaw.csd
+
+# Nice plot
+csd4_pl = displ$new(csd.degree[csd.degree >= 4]) 
+est = estimate_xmin(csd4_pl, xmins = 4) 
+csd4_pl$setXmin(est)
+degree.csd4.df <- data.frame(k = csd4_pl$internal$value, Pk = csd4_pl$internal$freq/139)
+
+#svg("Figures/CSD_xmin4_powerlaw.svg", height = 4, width = 4)
+ggplot() +
+  geom_point(data = degree.csd4.df, aes(x = k, y = Pk), color = "hotpink3") + 
+  geom_smooth(data = degree.csd4.df, aes(x = k, y = Pk),method = "lm", formula = y ~ x, se = TRUE, color = "hotpink3") +
+  theme_classic() +
+  scale_x_log10() +
+  scale_y_log10() +
+  xlab("k") +
+  ylab("P(k)") +
+  theme(text = element_text(size = 14))
+#dev.off()
+```
+
+
+# Check modularity in filtered CSD
+```{r csd_modularity, echo=FALSE}
+# Calculate C for each gene
+Ck.csd <- igraph::transitivity(gCSDct, type = "local")
+
+# Keep data for genes with out-degree >= 4
+keep <- csd.degree >= 4
+csd4.degree <- csd.degree[keep]
+Ck.csd4 <- Ck.csd[keep]
+
+# Fit linear model
+lm.csd <- lm(Ck.csd4 ~ 1/csd4.degree)
+summary(lm.csd)
+
+# Nice plotting
+Ck.csd.df <- data.frame(k = csd4.degree, Ck = Ck.csd4)
+
+svg("Figures/CSD4_Ck_k.svg", height = 4, width = 4)
+ggplot() +
+  geom_point(data = Ck.csd.df, aes(x = k, y = Ck), color = "hotpink3") + 
+  geom_smooth(data = Ck.csd.df, aes(x = k, y = Ck),method = "lm", formula = y ~ x, se = TRUE, color = "hotpink3") +
+  theme_classic() +
+  scale_x_log10() +
+  scale_y_log10() +
+  xlab("k") +
+  ylab("C(k)") +
+  theme(text = element_text(size = 14))
+dev.off()
+```
+```{r additional_analysis, echo=FALSE}
+# How many of the genes with CSD degree != 4 are in BL
+node.bl <- read.csv("Results/TENET_GRNI/BLct_TENET_Batch1and2_RealTime_FinalNodeTable_989nodes.tsv",
+                    header = TRUE, sep = "\t")
+View(node.bl[node.bl$AMEXID %in% names(csd4.degree),]) # These TFs might not be the reason why CSD does not regenerate.
+
+# What happens if we fit power-law in BL from xmin = 4?
+powerlaw.bl.4 <- igraph::fit_power_law(bl.degree, xmin = 4, force.continuous = FALSE, implementation = "plfit")
+powerlaw.bl.4
+
+# Plot
+bl.4_pl = displ$new(bl.degree[bl.degree >= 4]) 
+est = estimate_xmin(bl.4_pl, xmins = 4) 
+bl.4_pl$setXmin(est)
+bl.4_pl
+plot(bl.4_pl) ## Plot the data (from xmin)
+lines(bl.4_pl, col = 2) ## Add in the fitted distribution # x is degree (k) and y is P(k)
+
+
+# Compare if a Poisson or a power-law are a better fit for CSD
+csd.pwl.1 = displ$new(csd.degree)
+csd.pwl.1$setPars(estimate_pars(csd.pwl.1))
+csd.pwl.1
+
+csd.poi.1 = dispois$new(csd.degree)
+csd.poi.1$setPars(estimate_pars(csd.poi.1))
+csd.poi.1
+
+plot(csd.poi.1, ylab = "CDF") # Seems like power.law is a better fit
+lines(csd.pwl.1)
+lines(csd.poi.1, col = 2, lty = 2)
+compare_distributions(csd.pwl.1, csd.poi.1)$p_one_sided # < 0.05. PWL is better than POI.
+compare_distributions(csd.poi.1, csd.pwl.1)$p_one_sided # 1. POI is not better than PWL.
+
+# Compare if a Poisson or a power-law are a better fit for BL
+bl.pwl.1 = displ$new(bl.degree)
+bl.pwl.1$setPars(estimate_pars(bl.pwl.1))
+bl.pwl.1
+
+bl.poi.1 = dispois$new(bl.degree)
+bl.poi.1$setPars(estimate_pars(bl.poi.1))
+bl.poi.1
+
+plot(bl.poi.1, ylab = "CDF") # Seems like power.law is a better fit
+lines(bl.pwl.1)
+lines(bl.poi.1, col = 2, lty = 2)
+compare_distributions(bl.pwl.1, bl.poi.1)$p_one_sided # < 0.05. PWL is better than POI.
+compare_distributions(bl.poi.1, bl.pwl.1)$p_one_sided # 1. POI is not better than PWL.
+```
