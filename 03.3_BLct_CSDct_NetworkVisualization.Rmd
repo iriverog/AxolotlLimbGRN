@@ -1,0 +1,26 @@
+---
+title: "BLct_CSDct_Network Visualization"
+author: "Inés Rivero-García"
+date: "1/30/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/NetVolumes/LAB_MT/RESULTADOS/Ines/Axolotl_Limb_Regeneration/Results/TENET_GRNI/")
+library(ggplot2)
+library(ggvenn)
+BLcolor <- "forestgreen"
+CSDcolor <- "hotpink3"
+```
+
+```{r load_GRNs, echo=FALSE}
+BLct.genes <- read.csv("BLct_TENET_Batch1and2_RealTime_FinalNodeTable_989nodes.tsv", header = TRUE, sep = "\t")
+CSDct.genes <- read.csv("CSDct_TENET_Batch1and2_RealTime_FinalNodeTable_2524nodes.tsv", header = TRUE, sep = "\t")
+```
+```{r compare_genes, echo=FALSE}
+gene.list <- list(BLgenes = BLct.genes$AMEXID, CSDgenes = CSDct.genes$AMEXID)
+#svg("../../Figures/BLct_CSDct_TENET_GRN_GeneComparison.svg", height = 4, width = 4)
+ggvenn(data = gene.list, show_percentage = FALSE, fill_color = c(BLcolor, CSDcolor), auto_scale = TRUE, set_name_size = 0) #, text_size = 0
+#dev.off()
+```
