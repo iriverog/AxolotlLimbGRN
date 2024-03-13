@@ -1,0 +1,307 @@
+---
+title: "LEF1 and TCF7L2 target gene GSEA and expression"
+author: "Ines Rivero Garcia"
+date: "02/02/2023"
+output: 
+  html_document:
+      theme: cerulean
+      toc: true
+      toc_float: true
+      number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/NetVolumes/LAB_MT/RESULTADOS/Ines/Axolotl_Limb_Regeneration/Results/CNNC/LEF1_TCF7L2_Modeling/")
+```
+```{r libraries, include=FALSE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(Seurat)
+library(ggvenn)
+library(fgsea)
+library(gridExtra)
+```
+```{r loaddata, include=FALSE}
+CT <- readRDS("../../../Raw.data/BLct_CSDct_filter_Harmony_SeuratObj.RDS")
+dictionary <- read.csv("../../../Raw.data/AnnotationFile_AmexG_v6_chr_unscaffolded_CherryGFP_Ines.tsv", header = TRUE, sep = "\t")
+Idents(CT) <- "orig.ident"
+early <- subset(CT, idents = c("BL_3_5dpa", "CSD_3dpa"))
+BL_vs_CSD <- FindMarkers(early, ident.1 = "BL_3_5dpa", ident.2 = "CSD_3dpa", logfc.threshold = 0, test.use = "wilcox")
+CSD_vs_BL <- FindMarkers(early, ident.1 = "CSD_3dpa", ident.2 = "BL_3_5dpa", logfc.threshold = 0, test.use = "wilcox")
+LEF1net <- read.csv("BL3-LEF1_ConfidentInteractions.tsv", header = TRUE, sep = "\t")
+TCF7L2net <- read.csv("CSD3-TCF7L2_ConfidentInteractions.tsv", header = TRUE, sep = "\t")
+LEF1only <- setdiff(LEF1net$From, TCF7L2net$From) # Target genes were labeled as From but predictor is non-directional so it doesn't matter.
+TCF7L2only <- setdiff(TCF7L2net$From, LEF1net$From)
+PKN <- readRDS("../../../Raw.data/GRN_priorNetwork_allTarget_expressedTFs.rds")
+```
+
+
+# Background information and methodology.
+This notebook aims to find enriched pathways or functions in LEF1-specific and TCF7L2-specific target genes.
+
+
+**Methodology**:
+
+
+* GSEA was run using fGSEA.
+
+
+* Genes were ranked by avg_log2FC BL3_5dpa vs CSD_3dpa. Human-symbols of axolotl genes were used for enrichment analysis.
+
+
+* The following gene collections from MSigDB were used: MSigDB GO-Biological Pathways (C5). Human gene collections were used.
+
+
+* Only statistically significant pathways with Bonferroni-adjusted p-value < 0.05 are reported.
+
+
+* I additionally tested for enrichment in the list of cartilage markers provided by Anastasia and Tobias.
+
+
+# GSEA 
+## LEF1-specific targets
+```{r buildLEFrank, include=FALSE}
+gseaDat <- BL_vs_CSD[LEF1only,]
+LEFranks <- gseaDat$avg_log2FC
+names(LEFranks) <- dictionary %>% filter(AMEXID %in% LEF1only) %>% pull(Symbol)
+LEFranks <- sort(LEFranks)
+```
+
+
+### GO biological process
+```{r LEF1_MSigDB_C5bp, echo=FALSE, warning=FALSE}
+pathways <- gmtPathways("~/NetVolumes/LAB_MT/RESULTADOS/Ines/MSigDB_Hsapiens/c5.go.bp.v2022.1.Hs.symbols.gmt")
+fgseaRes <- fgsea(pathways = pathways, stats = LEFranks, minSize  = 10, maxSize  = 500)
+fgseaRes
+```
+
+
+### Cartilage markers from Tobias and Anastasia
+```{r LEF1_cartilage, echo=FALSE, warning=FALSE}
+pathways <- list(CartilageScore = c("COL8A1", "PRG4", "CCN2", "LOC115080956", "LOC115098222",
+                             "CNMD", "TNC", "COL9A2", "KRT18", "ACAN", "COL9A1",
+                             "COL9A3", "COL2A1", "SFRP2", "COL11A1", "EMILIN3",
+                             "FBLN1", "SRPX", "AB205_0187140", "NOV-CCN3",
+                             "DKK3", "FBN2", "INHBA", "CAPG", "TIMP1", "ASPN", 
+                             "MATN4", "COL11A2", "CXCL14", "SLC40A1"))
+fgseaRes <- fgsea(pathways = pathways, stats = LEFranks, minSize  = 1, maxSize  = 500)
+fgseaRes
+```
+
+
+## TCF7L2-specific targets
+```{r buildTCF7L2rank, include=FALSE}
+gseaDat <- CSD_vs_BL[TCF7L2only,]
+TCF7L2ranks <- gseaDat$avg_log2FC
+names(TCF7L2ranks) <- dictionary %>% filter(AMEXID %in% TCF7L2only) %>% pull(Symbol)
+TCF7L2ranks <- sort(TCF7L2ranks)
+```
+
+
+### GO biological process
+```{r TCF7L2_MSigDB_C5bp, echo=FALSE, warning=FALSE}
+pathways <- gmtPathways("~/NetVolumes/LAB_MT/RESULTADOS/Ines/MSigDB_Hsapiens/c5.go.bp.v2022.1.Hs.symbols.gmt")
+fgseaRes <- fgsea(pathways = pathways, stats = TCF7L2ranks, minSize  = 10, maxSize  = 500)
+fgseaRes
+```
+
+
+### Cartilage markers from Tobias and Anastasia
+```{r TCF7L2_cartilage, echo=FALSE, warning=FALSE}
+pathways <- list(CartilageScore = c("COL8A1", "PRG4", "CCN2", "LOC115080956", "LOC115098222",
+                             "CNMD", "TNC", "COL9A2", "KRT18", "ACAN", "COL9A1",
+                             "COL9A3", "COL2A1", "SFRP2", "COL11A1", "EMILIN3",
+                             "FBLN1", "SRPX", "AB205_0187140", "NOV-CCN3",
+                             "DKK3", "FBN2", "INHBA", "CAPG", "TIMP1", "ASPN", 
+                             "MATN4", "COL11A2", "CXCL14", "SLC40A1"))
+fgseaRes <- fgsea(pathways = pathways, stats = TCF7L2ranks, minSize  = 1, maxSize  = 500)
+fgseaRes
+```
+
+
+# Enrichment of LEF1 and TCF7L2 in BL or CSD 3dpa DEGs
+```{r test}
+pathways <- list(LEF1 = LEF1only,
+                 TCF7L2 = TCF7L2only)
+ranks <- BL_vs_CSD$avg_log2FC
+names(ranks) <- rownames(BL_vs_CSD)
+ranks <- sort(ranks)
+
+fgseaRes <- fgsea(pathways = pathways, stats = ranks, minSize = 1, maxSize = 2000)
+fgseaRes
+
+plotEnrichmentData <- function(pathway, stats,
+                              gseaParam=1) {
+
+    if (any(!is.finite(stats))){
+        stop("Not all stats values are finite numbers")
+    }
+
+    rnk <- rank(-stats)
+    ord <- order(rnk)
+
+    statsAdj <- stats[ord]
+    statsAdj <- sign(statsAdj) * (abs(statsAdj) ^ gseaParam)
+
+    pathway <- unname(as.vector(na.omit(match(pathway, names(statsAdj)))))
+    pathway <- sort(pathway)
+    pathway <- unique(pathway)
+
+    gseaRes <- calcGseaStat(statsAdj, selectedStats = pathway,
+                                   returnAllExtremes = TRUE)
+
+    bottoms <- gseaRes$bottoms
+    tops <- gseaRes$tops
+
+    n <- length(statsAdj)
+    xs <- as.vector(rbind(pathway - 1, pathway))
+    ys <- as.vector(rbind(bottoms, tops))
+    toPlot <- data.table(rank=c(0, xs, n + 1), ES=c(0, ys, 0))
+    ticks <- data.table(rank=pathway, stat=statsAdj[pathway])
+    stats <- data.table(rank=seq_along(stats), stat=statsAdj)
+
+    res <- list(
+        curve=toPlot,
+        ticks=ticks,
+        stats=stats,
+        posES=max(tops),
+        negES=min(bottoms),
+        spreadES=max(tops)-min(bottoms),
+        maxAbsStat=max(abs(statsAdj)))
+}
+
+
+
+lef1LIST<-plotEnrichmentData(pathways[["LEF1"]], ranks)
+tcf7l2LIST<-plotEnrichmentData(pathways[["TCF7L2"]], ranks)
+
+# Add Log2FC value
+BL_vs_CSD$AMEXID <- rownames(BL_vs_CSD)
+lef1LIST$ticks$Log2FC = NA
+lef1LIST$ticks$Log2FC = as.numeric(lef1LIST$ticks$Log2FC)
+for(i in 1:nrow(lef1LIST$ticks)){
+  r = as.numeric(lef1LIST$ticks[i, "rank"])
+  name = names(rev(ranks)[r])
+  lef1LIST$ticks[i, "Log2FC"] = BL_vs_CSD[BL_vs_CSD$AMEXID == name, "avg_log2FC"][1]
+}
+
+# Calculate correlation between TCF7L2 and all other genes in its gene set.
+tcf7l2LIST$ticks$Log2FC = NA
+tcf7l2LIST$ticks$Log2FC = as.numeric(tcf7l2LIST$ticks$Log2FC)
+for(i in 1:nrow(tcf7l2LIST$ticks)){
+  r = as.numeric(tcf7l2LIST$ticks[i, "rank"])
+  name = names(rev(ranks)[r])
+  tcf7l2LIST$ticks[i, "Log2FC"] = BL_vs_CSD[BL_vs_CSD$AMEXID == name, "avg_log2FC"][1]
+}
+
+pdf("../../../Figures/Enrichment_LEF_and_TCF7L2_3dpa.pdf", height = 4, width = 6)
+with(lef1LIST,
+     ggplot(data=curve) +
+       geom_line(aes(x=rank, y=ES), color="forestgreen") +
+       geom_line(data = tcf7l2LIST$curve, aes(x = rank, y=ES), color = "hotpink3")+
+       geom_segment(data=ticks,
+                    mapping=aes(x=rank, 
+                                y=0,
+                                xend=rank, 
+                                yend=0.05,
+                                color = Log2FC),
+                    size = 0.25) +
+       geom_segment(data=tcf7l2LIST$ticks,
+                    mapping=aes(x=rank, 
+                                y=-0.05,
+                                xend=rank, 
+                                yend=0,
+                                color=Log2FC),
+                    size = 0.21) +
+       scale_color_gradient2(low = "#d01c8b", mid = "grey99", high = "#4dac26")+
+     #color_distiller(palette = "PiYG", limits=c(-4,4), direction = 1)+
+       theme_classic() +
+       labs(x="Rank in BL 3dpi vs CSD 3dpi differential expression", 
+            y="enrichment score") +
+       ylim(c(-1,1))
+     )
+dev.off()
+
+```
+
+
+# Find genes with a binding motif in promoter
+```{r lef1_targets, echo=FALSE}
+LEF1pkn <- PKN[, "LEF1"]
+LEF1pkn <- LEF1pkn[LEF1pkn > 0]
+LEF1pkn <- names(LEF1pkn)
+LEF1candidates <- unname(sapply(LEF1pkn, function(x) unlist(strsplit(x, "_"))[2]) )
+LEF1candidates <- LEF1candidates[!is.na(LEF1candidates)]
+LEF1realtargets <- intersect(LEF1only, LEF1candidates)
+dictionary %>% filter(AMEXID %in% LEF1realtargets)
+# Matrix metalloproteases: MMP11, MMP13
+# Cell cycle regulators: AURKA, CENPF, NCAPH, TACC3
+# Maintains cells in progenitor state: NEWT-ID3
+# Cytoskeletal reorganization: FLNA
+# Long fatty acid metabolism: ACSL4
+```
+```{r tcf7l2_targets, echo=FALSE}
+TCF7L2pkn <- PKN[, "TCF7L2"]
+TCF7L2pkn <- TCF7L2pkn[TCF7L2pkn > 0]
+TCF7L2pkn <- names(TCF7L2pkn)
+TCF7L2candidates <- unname(sapply(TCF7L2pkn, function(x) unlist(strsplit(x, "_"))[2]) )
+TCF7L2candidates <- TCF7L2candidates[!is.na(TCF7L2candidates)]
+TCF7L2realtargets <- intersect(TCF7L2only, TCF7L2candidates)
+dictionary %>% filter(AMEXID %in% TCF7L2realtargets)
+```
+
+```{r gene_plots, echo=FALSE}
+Idents(CT) <- "orig.ident"
+clustercolors <- c("#ECB4D3", "#DD79B2", "#DD55A8", "#C33085", "#8F2361", "#5B163E", 
+                   "#C7E9C0", "#A1D99B", "#74C476", "#41AB5D", "#238B45", "#005A32")
+
+p1 <- VlnPlot(CT, features = "AMEX60DD000336", cols = clustercolors) + # MMP11
+  ylab("log-norm counts") + 
+  ggtitle("Mmp11") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+
+p2 <- VlnPlot(CT, features = "AMEX60DD049488", cols = clustercolors) + # MMP13
+  ylab("log-norm counts") + 
+  ggtitle("Mmp13") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+
+p3 <- VlnPlot(CT, features = "AMEX60DD027353", cols = clustercolors)  + # AURKA
+  ylab("log-norm counts") + 
+  ggtitle("Aurka") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+
+p4 <- VlnPlot(CT, features = "AMEX60DD036088", cols = clustercolors) + # CENPF
+  ylab("log-norm counts") + 
+  ggtitle("Cenpf") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+
+p5 <- VlnPlot(CT, features = "AMEX60DD008578", cols = clustercolors) + # DRAM2
+  ylab("log-norm counts") + 
+  ggtitle("Dram2") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+
+p6 <- VlnPlot(CT, features = "AMEX60DD011829", cols = clustercolors) + # SAV1
+  ylab("log-norm counts") + 
+  ggtitle("Sav1") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+
+p7 <- VlnPlot(CT, features = "AMEX60DD052549", cols = clustercolors) + # DKK1
+  ylab("log-norm counts") + 
+  ggtitle("Dkk1") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+
+p8 <- VlnPlot(CT, features = "AMEX60DD048261", cols = clustercolors) + # GAS6
+  ylab("log-norm counts") + 
+  ggtitle("Gas6") +
+  theme(legend.position = "none", plot.title = element_text(face = "italic"), axis.title.x = element_blank(), axis.text.x = element_blank())
+```
+```{r build_figure, echo=FALSE}
+pdf("../../../Figures/Fig_5.12_Examples_Lef1_Tcf7l2_Targets.pdf", width = 6, height = 8)
+grid.arrange(
+  arrangeGrob(p1, p2, p3, p4, ncol = 1, nrow = 4),
+  arrangeGrob(p5, p6, p7, p8, ncol = 1, nrow = 4),
+  ncol = 2,
+  nrow = 1
+)
+dev.off()
+```
